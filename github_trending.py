@@ -1,5 +1,6 @@
 """
 AI 热点 → 飞书群（卡片消息） + 飞书表格（静默写入）
+支持中英文双语
 """
 import requests
 import json
@@ -21,6 +22,19 @@ def get_feishu_token():
     ).json()["tenant_access_token"]
 
 
+def translate(text):
+    """英文翻译成中文"""
+    if not text:
+        return ""
+    try:
+        resp = requests.get("https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "en", "tl": "zh-CN", "dt": "t", "q": text},
+            timeout=10)
+        return resp.json()[0][0][0]
+    except:
+        return text
+
+
 def get_ai_repos():
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     all_repos = {}
@@ -32,7 +46,16 @@ def get_ai_repos():
                 all_repos[r["full_name"]] = r
         except:
             continue
-    return sorted(all_repos.values(), key=lambda x: x["stargazers_count"], reverse=True)[:15]
+    
+    repos = sorted(all_repos.values(), key=lambda x: x["stargazers_count"], reverse=True)[:15]
+    
+    # 翻译描述
+    for r in repos:
+        desc = r.get("description") or ""
+        r["desc_en"] = desc[:200]
+        r["desc_zh"] = translate(desc[:150]) if desc else ""
+    
+    return repos
 
 
 def write_to_feishu(token, repos):
@@ -42,7 +65,7 @@ def write_to_feishu(token, repos):
     today = datetime.now().strftime("%Y-%m-%d")
     records = [{"fields": {
         "仓库名": r["full_name"],
-        "描述": (r.get("description") or "")[:200],
+        "描述": r["desc_zh"] or r["desc_en"],
         "星数": r["stargazers_count"],
         "今日星数": 0,
         "语言": r.get("language") or "",
@@ -55,40 +78,46 @@ def write_to_feishu(token, repos):
 
 def send_card_to_feishu(repos):
     """发送卡片消息到飞书群"""
-    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now().strftime("%H:%M")
     
-    # 构建卡片内容
     elements = []
     
-    # 标题
+    # 头部统计
+    total_stars = sum(r["stargazers_count"] for r in repos)
     elements.append({
         "tag": "markdown",
-        "content": f"**📊 AI 热点日报** | {today}"
+        "content": f"📅 **{today}** | 🔍 扫描了 5 个 AI 社区 | 📊 共发现 **{len(repos)}** 个热门项目"
     })
     elements.append({"tag": "hr"})
     
-    # 每个仓库
+    # 每个项目
     for i, r in enumerate(repos[:10], 1):
-        desc = (r.get("description") or "")[:80]
+        desc_zh = r["desc_zh"][:60] if r["desc_zh"] else ""
+        desc_en = r["desc_en"][:60] if r["desc_en"] else ""
         lang = r.get("language") or "N/A"
         stars = r["stargazers_count"]
         url = r["html_url"]
         
-        md = f"**{i}. [{r['full_name']}]({url})**\n⭐ {stars:,} | {lang}"
-        if desc:
-            md += f"\n{desc}"
+        md = f"**{i}. [{r['full_name']}]({url})**\n"
+        md += f"⭐ **{stars:,}** | 💻 {lang}"
+        if desc_zh:
+            md += f"\n🇨🇳 {desc_zh}"
+        if desc_en and desc_en != desc_zh:
+            md += f"\n🇬🇧 {desc_en}"
         
         elements.append({"tag": "markdown", "content": md})
     
     elements.append({"tag": "hr"})
     elements.append({
         "tag": "note",
-        "elements": [{"tag": "plain_text", "content": f"数据来源：GitHub Trending | 共 {len(repos)} 个项目"}]
+        "elements": [{"tag": "plain_text", "content": f"🤖 AI 热点日报 | 数据来源：GitHub Trending | {now}"}]
     })
     
     card = {
         "msg_type": "interactive",
         "card": {
+            "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"tag": "plain_text", "content": "🤖 AI 热点日报"},
                 "template": "blue"
